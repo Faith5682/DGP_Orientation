@@ -215,8 +215,9 @@ def test_json_body_with_200_is_parsed() -> None:
 
 
 def test_connection_error_raises() -> None:
-    with httpx.Client(base_url="http://localhost:59999") as client, pytest.raises(
-        httpx.ConnectError
+    with (
+        httpx.Client(base_url="http://localhost:59999") as client,
+        pytest.raises(httpx.ConnectError),
     ):
         exchange(client, "GET", "/ping")
 
