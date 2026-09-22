@@ -60,7 +60,26 @@ def main() -> None:
                             line = line[1:]
                         lines.append(line)
                     body = {"text": "\n".join(lines)}
-                elif command in ("delete-user", "put", "get", "delete"):
+                elif command in ("put", "get"):
+                    name = input("Name: ")
+                    print(
+                        "Text: enter . alone to finish; start a dot-leading line with an extra dot.\nNo implicit trailing newline; add a blank line to include one. . immediately means empty text."
+                    )
+                    lines = []
+                    if command == "put":
+                        while True:
+                            line = input("| ")
+                            if line == ".":
+                                break
+                            if line.startswith(".."):
+                                line = line[1:]
+                            lines.append(line)
+                    body = {"text": "\n".join(lines)} if command == "put" else None
+                    method, path = {
+                        "put": ("PUT", "/texts/" + name),
+                        "get": ("GET", "/texts/" + name),
+                    }[command]
+                elif command in ("delete-user", "delete"):
                     print("This task is not implemented in the starting code yet.")
                     continue
                 else:
