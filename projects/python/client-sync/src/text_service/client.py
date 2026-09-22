@@ -79,6 +79,9 @@ def main() -> None:
                         "put": ("PUT", "/texts/" + name),
                         "get": ("GET", "/texts/" + name),
                     }[command]
+                elif command == "delete":
+                    name = input("Name: ")
+                    method, path = "DELETE", "/texts/" + name
                 elif command in ("delete-user", "delete"):
                     print("This task is not implemented in the starting code yet.")
                     continue

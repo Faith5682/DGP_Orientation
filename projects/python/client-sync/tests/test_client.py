@@ -54,7 +54,7 @@ def test_put_and_get() -> None:
     def respond_login(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/sessions"
         assert json.loads(request.content) == {"username": "alice", "password": "secret"}
-        return httpx.Response(200, json={"data": {"token": "example"}})
+        return httpx.Response(200, json={"data": {"token": "example", "expires": 300}})
 
     def respond_put(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/texts/1"
@@ -92,3 +92,13 @@ def test_put_and_get() -> None:
             200,
             {"data": {"text": "Hello, world!"}},
         )
+
+def test_delete() -> None:
+    def respond_delete(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/texts/1"
+        assert request.headers["Authorization"] == "Bearer example"
+        return httpx.Response(200, json={"data": None})
+    with httpx.Client(
+        base_url="http://localhost", transport=httpx.MockTransport(respond_delete)
+    ) as client:
+        assert exchange(client, "DELETE", "/texts/1", "example") == (200, {"data": None})
