@@ -46,7 +46,21 @@ def main() -> None:
                         "logout": ("DELETE", "/sessions/current"),
                         "list": ("GET", "/texts"),
                     }[command]
-                elif command in ("echo", "delete-user", "put", "get", "delete"):
+                elif command == "echo":
+                    method, path = "POST", "/echo"
+                    print(
+                        "Text: enter . alone to finish; start a dot-leading line with an extra dot.\nNo implicit trailing newline; add a blank line to include one. . immediately means empty text."
+                    )
+                    lines = []
+                    while True:
+                        line = input("| ")
+                        if line == ".":
+                            break
+                        if line.startswith(".."):
+                            line = line[1:]
+                        lines.append(line)
+                    body = {"text": "\n".join(lines)}
+                elif command in ("delete-user", "put", "get", "delete"):
                     print("This task is not implemented in the starting code yet.")
                     continue
                 else:
