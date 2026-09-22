@@ -63,4 +63,20 @@ def test_delete() -> None:
         )
         assert status == 200
         token = result["data"]["token"]
+        assert '1' in exchange(client, "GET", "/texts", token)[1]["data"]
         assert exchange(client, "DELETE", "/texts/1", token) == (200, {"data": None})
+        assert not '1' in exchange(client, "GET", "/texts", token)[1]["data"]
+
+def test_delete_user() -> None:
+    
+    with httpx.Client(base_url="http://localhost:7878") as client:
+        status, result = exchange(
+            client, "POST", "/sessions", body={"username": "alice", "password": "password1"}
+        )
+        assert status == 200
+        token = result["data"]["token"]
+        status, result = exchange(
+            client, "DELETE", "/users/me", token
+        )
+        assert status == 200
+        assert exchange(client, "DELETE", "/users/me", token) == (401, {"message":"Please log in again"})
