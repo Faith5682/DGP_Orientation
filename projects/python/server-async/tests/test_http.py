@@ -144,11 +144,23 @@ async def test_body_limit_and_routing(client: AsyncClient) -> None:
     ("method", "path"),
     [
         ("DELETE", "/users/me"),
-        ("DELETE", "/texts/note"),
     ],
 )
 async def test_unimplemented_routes_are_absent(client: AsyncClient, method: str, path: str) -> None:
     assert (await client.request(method, path)).status_code == 404
+
+
+async def test_text_delete(client: AsyncClient) -> None:
+    headers = await auth_headers(client)
+    await client.put("/texts/note", json={"text": "bye"}, headers=headers)
+    assert (await client.delete("/texts/note", headers=headers)).json() == {"data": None}
+    assert (await client.get("/texts/note", headers=headers)).status_code == 404
+    assert (await client.get("/texts", headers=headers)).json() == {"data": []}
+    assert (await client.delete("/texts/note", headers=headers)).status_code == 404
+
+
+async def test_text_delete_requires_authentication(client: AsyncClient) -> None:
+    assert (await client.delete("/texts/note")).status_code == 401
 
 
 @pytest.mark.parametrize(

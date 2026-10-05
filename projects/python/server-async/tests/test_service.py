@@ -85,3 +85,9 @@ def test_texts() -> None:
     # Users are isolated: another user sees no "note".
     bob = _token(service, "bob")
     assert service.handle("GET", "/texts/note", None, bob)[0] == 404
+    # DELETE removes the text and is idempotent per user.
+    assert service.handle("DELETE", "/texts/note", None, auth) == (200, {"data": None})
+    assert service.handle("GET", "/texts/note", None, auth)[0] == 404
+    assert service.handle("GET", "/texts", None, auth) == (200, {"data": []})
+    assert service.handle("DELETE", "/texts/note", None, auth)[0] == 404
+    assert service.handle("DELETE", "/texts/note", None, "")[0] == 401

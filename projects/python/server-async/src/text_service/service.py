@@ -120,7 +120,7 @@ class Service:
                 return 200, {"data": {"token": user.token}}
         name = text_name(path)
         text = ""
-        if name is not None and method in ("PUT", "GET"):
+        if name is not None and method in TEXT_PATH_METHODS:
             if not TEXT_NAME_RE.fullmatch(name):
                 return 400, {"message": "Invalid text name"}
             if method == "PUT":
@@ -133,7 +133,7 @@ class Service:
                     return 413, {"message": "Text too large"}
                 text = body["text"]
         protected = path in ("/texts", "/sessions/current") or (
-            name is not None and method in ("PUT", "GET")
+            name is not None and method in TEXT_PATH_METHODS
         )
         if protected:
             token = (
@@ -144,10 +144,15 @@ class Service:
                 if user is None:
                     return 401, {"message": "Login required"}
                 # Later server task: check token expiry here, before reading or modifying state.
-                if name is not None and method in ("PUT", "GET"):
+                if name is not None and method in TEXT_PATH_METHODS:
                     if method == "PUT":
                         user.texts[name] = text
                         return 200, {"data": None}
+                    if method == "DELETE":
+                        if name in user.texts:
+                            del user.texts[name]
+                            return 200, {"data": None}
+                        return 404, {"message": "Text not found"}
                     if name in user.texts:
                         return 200, {"data": user.texts[name]}
                     return 404, {"message": "Text not found"}
