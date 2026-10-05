@@ -38,7 +38,17 @@ def test_concurrent_registration() -> None:
         statuses = list(pool.map(lambda _: service.handle("POST", "/users", body, "")[0], range(4)))
     assert sorted(statuses) == [201, 409, 409, 409]
 
+
 def test_echo() -> None:
     service = Service()
     body = {"text": "Hello, World!"}
     assert service.handle("POST", "/echo", body, "") == (200, {"data": "Hello, World!"})
+    assert service.handle("POST", "/echo", {"text": "你好\nRM"}, "") == (200, {"data": "你好\nRM"})
+    assert service.handle("POST", "/echo", {"text": ""}, "") == (200, {"data": ""})
+    for bad in (None, [], {}, {"text": 42}, {"text": "a", "extra": 1}, {"text": "\ud800"}):
+        assert service.handle("POST", "/echo", bad, "")[0] == 400
+    assert service.handle("POST", "/echo", {"text": "x" * 65536}, "")[0] == 200
+    assert service.handle("POST", "/echo", {"text": "x" * 65537}, "")[0] == 413
+    # 65,536 bytes measured after UTF-8 encoding, not by character count.
+    assert service.handle("POST", "/echo", {"text": "你" * 21845}, "")[0] == 200
+    assert service.handle("POST", "/echo", {"text": "你" * 21846}, "")[0] == 413

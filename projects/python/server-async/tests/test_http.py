@@ -50,12 +50,34 @@ async def test_invalid_json(client: AsyncClient, body: bytes) -> None:
     assert (await client.post("/users", content=body)).status_code == 400
 
 
+async def test_echo_roundtrip(client: AsyncClient) -> None:
+    assert (await client.post("/echo", json={"text": "你好\nRM"})).json() == {"data": "你好\nRM"}
+    assert (await client.post("/echo", json={"text": ""})).json() == {"data": ""}
+
+
+@pytest.mark.parametrize("body", [[], {}, {"text": 42}, {"text": "a", "extra": 1}])
+async def test_echo_rejects_bad_fields(client: AsyncClient, body: object) -> None:
+    assert (await client.post("/echo", json=body)).status_code == 400
+
+
+async def test_echo_rejects_unpaired_surrogate(client: AsyncClient) -> None:
+    response = await client.post(
+        "/echo", content=b'{"text":"\\ud800"}', headers={"Content-Type": "application/json"}
+    )
+    assert response.status_code == 400
+
+
+async def test_echo_text_limit(client: AsyncClient) -> None:
+    assert (await client.post("/echo", json={"text": "x" * 65536})).status_code == 200
+    assert (await client.post("/echo", json={"text": "x" * 65537})).status_code == 413
+
+
 async def test_body_limit_and_routing(client: AsyncClient) -> None:
     exact = b"{}" + b" " * (524288 - 2)
     assert (await client.post("/users", content=exact)).status_code == 400
     assert (await client.post("/users", content=exact + b" ")).status_code == 413
     assert (await client.get("/missing")).status_code == 404
-    assert (await client.get("/echo")).status_code == 404
+    assert (await client.get("/echo")).status_code == 405
     assert (await client.patch("/ping")).status_code == 405
     assert (await client.get("/ping?test=1")).json() == {"data": "pong"}
 
@@ -63,7 +85,6 @@ async def test_body_limit_and_routing(client: AsyncClient) -> None:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("POST", "/echo"),
         ("DELETE", "/users/me"),
         ("PUT", "/texts/note"),
         ("GET", "/texts/note"),

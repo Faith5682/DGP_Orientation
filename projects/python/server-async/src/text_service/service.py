@@ -25,6 +25,19 @@ def route_error(method: str, path: str) -> int | None:
     return None if method == allowed else 405
 
 
+TEXT_MAX_BYTES = 65_536
+
+
+def text_bytes(value: Any) -> bytes | None:
+    """UTF-8 bytes for a valid text string, or None when the value is invalid."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return value.encode("utf-8")
+    except UnicodeError:  # unpaired surrogates are not valid Unicode
+        return None
+
+
 @dataclass
 class User:
     salt: bytes
@@ -46,6 +59,13 @@ class Service:
         if method == "GET" and path == "/ping":
             return 200, {"data": "pong"}
         if method == "POST" and path == "/echo":
+            if not isinstance(body, dict) or set(body) != {"text"}:
+                return 400, {"message": "Expected text"}
+            encoded = text_bytes(body["text"])
+            if encoded is None:
+                return 400, {"message": "text must be a string"}
+            if len(encoded) > TEXT_MAX_BYTES:
+                return 413, {"message": "Text too large"}
             return 200, {"data": body["text"]}
         if path in ("/users", "/sessions") and method == "POST":
             if not isinstance(body, dict) or set(body) != {"username", "password"}:
