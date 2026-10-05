@@ -52,3 +52,36 @@ def test_echo() -> None:
     # 65,536 bytes measured after UTF-8 encoding, not by character count.
     assert service.handle("POST", "/echo", {"text": "你" * 21845}, "")[0] == 200
     assert service.handle("POST", "/echo", {"text": "你" * 21846}, "")[0] == 413
+
+
+def _token(service: Service, username: str) -> str:
+    service.handle("POST", "/users", {"username": username, "password": "password1"}, "")
+    _, result = service.handle(
+        "POST", "/sessions", {"username": username, "password": "password1"}, ""
+    )
+    return f"Bearer {result['data']['token']}"
+
+
+def test_texts() -> None:
+    service = Service()
+    auth = _token(service, "alice")
+    assert service.handle("GET", "/texts/note", None, auth)[0] == 404
+    assert service.handle("PUT", "/texts/note", {"text": "test\nRM"}, auth) == (200, {"data": None})
+    assert service.handle("GET", "/texts/note", None, auth) == (200, {"data": "test\nRM"})
+    assert service.handle("GET", "/texts", None, auth) == (200, {"data": ["note"]})
+    # Empty text is stored and read back as 200, not mistaken for a missing text.
+    assert service.handle("PUT", "/texts/note", {"text": ""}, auth)[0] == 200
+    assert service.handle("GET", "/texts/note", None, auth) == (200, {"data": ""})
+    # Name validation.
+    for bad_path in ("/texts/bad name", "/texts/bad.name", f"/texts/{'a' * 65}"):
+        assert service.handle("GET", bad_path, None, auth)[0] == 400
+    # Field validation and limits.
+    for bad in (None, [], {}, {"text": 42}, {"text": "a", "extra": 1}):
+        assert service.handle("PUT", "/texts/note", bad, auth)[0] == 400
+    assert service.handle("PUT", "/texts/note", {"text": "x" * 65537}, auth)[0] == 413
+    # Authentication is checked before existence.
+    assert service.handle("PUT", "/texts/note", {"text": "x"}, "")[0] == 401
+    assert service.handle("GET", "/texts/note", None, "Bearer nope")[0] == 401
+    # Users are isolated: another user sees no "note".
+    bob = _token(service, "bob")
+    assert service.handle("GET", "/texts/note", None, bob)[0] == 404

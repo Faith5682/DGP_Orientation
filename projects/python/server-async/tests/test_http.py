@@ -72,6 +72,64 @@ async def test_echo_text_limit(client: AsyncClient) -> None:
     assert (await client.post("/echo", json={"text": "x" * 65537})).status_code == 413
 
 
+async def auth_headers(client: AsyncClient, username: str = "alice") -> dict[str, str]:
+    await client.post("/users", json={"username": username, "password": "password1"})
+    response = await client.post("/sessions", json={"username": username, "password": "password1"})
+    token = response.json()["data"]["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_text_upload_and_read(client: AsyncClient) -> None:
+    headers = await auth_headers(client)
+    assert (await client.get("/texts/note", headers=headers)).status_code == 404
+    assert (await client.put("/texts/note", json={"text": "你好\nRM"}, headers=headers)).json() == {
+        "data": None
+    }
+    assert (await client.get("/texts/note", headers=headers)).json() == {"data": "你好\nRM"}
+    assert (await client.get("/texts", headers=headers)).json() == {"data": ["note"]}
+    assert (await client.put("/texts/note", json={"text": ""}, headers=headers)).status_code == 200
+    assert (await client.get("/texts/note", headers=headers)).json() == {"data": ""}
+
+
+async def test_text_requires_authentication(client: AsyncClient) -> None:
+    assert (await client.put("/texts/note", json={"text": "x"})).status_code == 401
+    assert (await client.get("/texts/note")).status_code == 401
+    assert (
+        await client.get("/texts/note", headers={"Authorization": "Bearer nope"})
+    ).status_code == 401
+
+
+@pytest.mark.parametrize("name", ["bad name", "bad.name", "a" * 65])
+async def test_text_rejects_bad_name(client: AsyncClient, name: str) -> None:
+    headers = await auth_headers(client)
+    assert (await client.get(f"/texts/{name}", headers=headers)).status_code == 400
+
+
+@pytest.mark.parametrize("body", [[], {}, {"text": 42}, {"text": "a", "extra": 1}])
+async def test_text_put_rejects_bad_fields(client: AsyncClient, body: object) -> None:
+    headers = await auth_headers(client)
+    assert (await client.put("/texts/note", json=body, headers=headers)).status_code == 400
+
+
+async def test_text_put_limits(client: AsyncClient) -> None:
+    headers = await auth_headers(client)
+    assert (
+        await client.put("/texts/note", json={"text": "x" * 65536}, headers=headers)
+    ).status_code == 200
+    assert (
+        await client.put("/texts/note", json={"text": "x" * 65537}, headers=headers)
+    ).status_code == 413
+
+
+async def test_texts_are_per_user(client: AsyncClient) -> None:
+    alice = await auth_headers(client, "alice")
+    bob = await auth_headers(client, "bob")
+    await client.put("/texts/note", json={"text": "alice-text"}, headers=alice)
+    await client.put("/texts/note", json={"text": "bob-text"}, headers=bob)
+    assert (await client.get("/texts/note", headers=alice)).json() == {"data": "alice-text"}
+    assert (await client.get("/texts/note", headers=bob)).json() == {"data": "bob-text"}
+
+
 async def test_body_limit_and_routing(client: AsyncClient) -> None:
     exact = b"{}" + b" " * (524288 - 2)
     assert (await client.post("/users", content=exact)).status_code == 400
@@ -86,8 +144,6 @@ async def test_body_limit_and_routing(client: AsyncClient) -> None:
     ("method", "path"),
     [
         ("DELETE", "/users/me"),
-        ("PUT", "/texts/note"),
-        ("GET", "/texts/note"),
         ("DELETE", "/texts/note"),
     ],
 )
@@ -95,6 +151,8 @@ async def test_unimplemented_routes_are_absent(client: AsyncClient, method: str,
     assert (await client.request(method, path)).status_code == 404
 
 
-@pytest.mark.parametrize("path", ["/ping", "/users", "/sessions", "/sessions/current", "/texts"])
+@pytest.mark.parametrize(
+    "path", ["/ping", "/users", "/sessions", "/sessions/current", "/texts", "/texts/note"]
+)
 async def test_wrong_method_precedes_authentication(client: AsyncClient, path: str) -> None:
     assert (await client.patch(path)).status_code == 405

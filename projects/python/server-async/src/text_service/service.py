@@ -15,10 +15,25 @@ ROUTES = (
     ("POST", "/sessions"),
     ("DELETE", "/sessions/current"),
     ("GET", "/texts"),
+    ("PUT", "/texts/{name}"),
+    ("GET", "/texts/{name}"),
+    ("DELETE", "/texts/{name}"),
 )
+
+TEXT_PATH_RE = re.compile(r"^/texts/(?P<name>[^/]+)$")
+TEXT_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+TEXT_PATH_METHODS = ("PUT", "GET", "DELETE")
+
+
+def text_name(path: str) -> str | None:
+    """Name segment for a /texts/{name} path, or None when the path does not match."""
+    match = TEXT_PATH_RE.match(path)
+    return match["name"] if match else None
 
 
 def route_error(method: str, path: str) -> int | None:
+    if text_name(path) is not None:
+        return None if method in TEXT_PATH_METHODS else 405
     allowed = next((verb for verb, route in ROUTES if route == path), None)
     if allowed is None:
         return 404
@@ -103,7 +118,23 @@ class Service:
                 user.token = secrets.token_urlsafe(32)
                 # Later server task: record a deadline and return expires_in.
                 return 200, {"data": {"token": user.token}}
-        protected = path in ("/texts", "/sessions/current")
+        name = text_name(path)
+        text = ""
+        if name is not None and method in ("PUT", "GET"):
+            if not TEXT_NAME_RE.fullmatch(name):
+                return 400, {"message": "Invalid text name"}
+            if method == "PUT":
+                if not isinstance(body, dict) or set(body) != {"text"}:
+                    return 400, {"message": "Expected text"}
+                encoded = text_bytes(body["text"])
+                if encoded is None:
+                    return 400, {"message": "text must be a string"}
+                if len(encoded) > TEXT_MAX_BYTES:
+                    return 413, {"message": "Text too large"}
+                text = body["text"]
+        protected = path in ("/texts", "/sessions/current") or (
+            name is not None and method in ("PUT", "GET")
+        )
         if protected:
             token = (
                 authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
@@ -113,6 +144,13 @@ class Service:
                 if user is None:
                     return 401, {"message": "Login required"}
                 # Later server task: check token expiry here, before reading or modifying state.
+                if name is not None and method in ("PUT", "GET"):
+                    if method == "PUT":
+                        user.texts[name] = text
+                        return 200, {"data": None}
+                    if name in user.texts:
+                        return 200, {"data": user.texts[name]}
+                    return 404, {"message": "Text not found"}
                 if path == "/sessions/current" and method == "DELETE":
                     user.token = None
                     return 200, {"data": None}
