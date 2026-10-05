@@ -190,3 +190,50 @@ async def test_delete_user_leaves_others_intact(client: AsyncClient) -> None:
 )
 async def test_wrong_method_precedes_authentication(client: AsyncClient, path: str) -> None:
     assert (await client.patch(path)).status_code == 405
+
+
+class FakeClock:
+    """Deterministic clock so expiry can be tested without sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+async def expiring_client() -> AsyncGenerator[tuple[AsyncClient, FakeClock]]:
+    clock = FakeClock()
+    app = create_app(token_ttl_seconds=300, clock=clock)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client,
+    ):
+        yield client, clock
+
+
+async def test_session_expires_in_and_relogin(client: AsyncClient) -> None:
+    await client.post("/users", json={"username": "alice", "password": "password1"})
+    first = await client.post("/sessions", json={"username": "alice", "password": "password1"})
+    assert first.json()["data"]["expires_in"] == 300
+    second = await client.post("/sessions", json={"username": "alice", "password": "password1"})
+    old = {"Authorization": f"Bearer {first.json()['data']['token']}"}
+    new = {"Authorization": f"Bearer {second.json()['data']['token']}"}
+    assert (await client.get("/texts", headers=old)).status_code == 401
+    assert (await client.get("/texts", headers=new)).status_code == 200
+
+
+async def test_token_expiry_http(expiring_client: tuple[AsyncClient, FakeClock]) -> None:
+    client, clock = expiring_client
+    headers = await auth_headers(client)
+    assert (await client.get("/texts", headers=headers)).status_code == 200
+    clock.now = 299.999
+    assert (await client.get("/texts", headers=headers)).status_code == 200
+    clock.now = 300.0
+    assert (await client.get("/texts", headers=headers)).status_code == 401
+    assert (await client.put("/texts/note", json={"text": "x"}, headers=headers)).status_code == 401
+    assert (await client.delete("/users/me", headers=headers)).status_code == 401
+    # Logging in again yields a usable token.
+    fresh = await auth_headers(client)
+    assert (await client.get("/texts", headers=fresh)).status_code == 200

@@ -150,3 +150,77 @@ def test_login_does_not_apply_to_reregistered_account(monkeypatch: pytest.Monkey
         release.set()
         assert future.result(timeout=5)[0] == 401
     assert service.handle("GET", "/texts", None, new_auth) == (200, {"data": []})
+
+
+class FakeClock:
+    """Deterministic clock so expiry can be tested without sleeping."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_login_reports_ttl_and_operations_do_not_renew() -> None:
+    clock = FakeClock()
+    service = Service(token_ttl_seconds=120, clock=clock)
+    service.handle("POST", "/users", {"username": "alice", "password": "password1"}, "")
+    _, result = service.handle(
+        "POST", "/sessions", {"username": "alice", "password": "password1"}, ""
+    )
+    assert result["data"]["expires_in"] == 120
+    auth = f"Bearer {result['data']['token']}"
+
+    clock.now = 60.0
+    # Protected operations succeed but must not extend the deadline.
+    assert service.handle("GET", "/texts", None, auth)[0] == 200
+    assert service.handle("GET", "/texts", None, auth)[0] == 200
+    # Reaching the deadline (now == ttl) invalidates the token.
+    clock.now = 120.0
+    assert service.handle("GET", "/texts", None, auth)[0] == 401
+
+
+def test_expired_token_is_rejected_on_every_protected_route() -> None:
+    clock = FakeClock()
+    service = Service(token_ttl_seconds=300, clock=clock)
+    auth = _token(service, "alice")
+    clock.now = 300.0
+    cases = (
+        ("GET", "/texts", None),
+        ("PUT", "/texts/note", {"text": "x"}),
+        ("GET", "/texts/note", None),
+        ("DELETE", "/texts/note", None),
+        ("DELETE", "/sessions/current", None),
+        ("DELETE", "/users/me", None),
+    )
+    for method, path, body in cases:
+        assert service.handle(method, path, body, auth)[0] == 401
+
+
+def test_relogin_replaces_token() -> None:
+    clock = FakeClock()
+    service = Service(token_ttl_seconds=100, clock=clock)
+    old_auth = _token(service, "alice")
+    clock.now = 100.0
+    assert service.handle("GET", "/texts", None, old_auth)[0] == 401
+
+    new_auth = _token(service, "alice")
+    assert new_auth != old_auth
+    assert service.handle("GET", "/texts", None, new_auth) == (200, {"data": []})
+    assert service.handle("GET", "/texts", None, old_auth)[0] == 401
+
+
+def test_logout_and_delete_user_revoke_before_expiry() -> None:
+    clock = FakeClock()
+    service = Service(token_ttl_seconds=300, clock=clock)
+
+    logout_auth = _token(service, "alice")
+    clock.now = 1.0
+    assert service.handle("DELETE", "/sessions/current", None, logout_auth) == (200, {"data": None})
+    assert service.handle("GET", "/texts", None, logout_auth)[0] == 401
+
+    delete_auth = _token(service, "bob")
+    clock.now = 2.0
+    assert service.handle("DELETE", "/users/me", None, delete_auth) == (200, {"data": None})
+    assert service.handle("GET", "/texts", None, delete_auth)[0] == 401

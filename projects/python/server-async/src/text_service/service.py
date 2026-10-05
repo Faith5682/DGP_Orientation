@@ -5,7 +5,9 @@ import hmac
 import re
 import secrets
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any
 
 ROUTES = (
@@ -54,16 +56,26 @@ def text_bytes(value: Any) -> bytes | None:
         return None
 
 
+TOKEN_TTL_SECONDS = 300
+
+
 @dataclass
 class User:
     salt: bytes
     digest: bytes
     token: str | None = None
+    token_deadline: float | None = None
     texts: dict[str, str] = field(default_factory=dict)
 
 
 class Service:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        token_ttl_seconds: int = TOKEN_TTL_SECONDS,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self.token_ttl_seconds = token_ttl_seconds
+        self.clock = clock
         self.users: dict[str, User] = {}
         self.lock = threading.Lock()
 
@@ -117,8 +129,8 @@ class Service:
                 if self.users.get(name) is not user or not hmac.compare_digest(digest, expected):
                     return 401, {"message": "Invalid username or password"}
                 user.token = secrets.token_urlsafe(32)
-                # Later server task: record a deadline and return expires_in.
-                return 200, {"data": {"token": user.token}}
+                user.token_deadline = self.clock() + self.token_ttl_seconds
+                return 200, {"data": {"token": user.token, "expires_in": self.token_ttl_seconds}}
         name = text_name(path)
         text = ""
         if name is not None and method in TEXT_PATH_METHODS:
@@ -141,10 +153,20 @@ class Service:
                 authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
             )
             with self.lock:
-                user = next((u for u in self.users.values() if token and u.token == token), None)
+                now = self.clock()
+                user = next(
+                    (
+                        u
+                        for u in self.users.values()
+                        if token
+                        and u.token == token
+                        and u.token_deadline is not None
+                        and now < u.token_deadline
+                    ),
+                    None,
+                )
                 if user is None:
                     return 401, {"message": "Login required"}
-                # Later server task: check token expiry here, before reading or modifying state.
                 if name is not None and method in TEXT_PATH_METHODS:
                     if method == "PUT":
                         user.texts[name] = text
@@ -159,6 +181,7 @@ class Service:
                     return 404, {"message": "Text not found"}
                 if path == "/sessions/current" and method == "DELETE":
                     user.token = None
+                    user.token_deadline = None
                     return 200, {"data": None}
                 if path == "/texts" and method == "GET":
                     return 200, {"data": sorted(user.texts)}

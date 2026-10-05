@@ -2,16 +2,16 @@ import argparse
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
-from time import perf_counter
+from time import monotonic, perf_counter
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import RequestResponseEndpoint
 
-from .service import ROUTES, Service, route_error
+from .service import ROUTES, TOKEN_TTL_SECONDS, Service, route_error
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -25,9 +25,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     yield
 
 
-def create_app() -> FastAPI:
+def create_app(
+    token_ttl_seconds: int = TOKEN_TTL_SECONDS, clock: Callable[[], float] = monotonic
+) -> FastAPI:
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None, lifespan=lifespan)
-    service = Service()
+    service = Service(token_ttl_seconds, clock)
 
     @app.middleware("http")
     async def log_request(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -87,7 +89,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7878)
+    parser.add_argument("--token-ttl-seconds", type=int, default=TOKEN_TTL_SECONDS)
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be 1..65535")
-    uvicorn.run(create_app(), host=args.host, port=args.port, workers=1, access_log=False)
+    if args.token_ttl_seconds <= 0:
+        parser.error("token-ttl-seconds must be positive")
+    uvicorn.run(
+        create_app(args.token_ttl_seconds),
+        host=args.host,
+        port=args.port,
+        workers=1,
+        access_log=False,
+    )
