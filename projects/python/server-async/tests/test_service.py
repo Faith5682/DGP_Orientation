@@ -224,3 +224,51 @@ def test_logout_and_delete_user_revoke_before_expiry() -> None:
     clock.now = 2.0
     assert service.handle("DELETE", "/users/me", None, delete_auth) == (200, {"data": None})
     assert service.handle("GET", "/texts", None, delete_auth)[0] == 401
+
+
+def test_concurrent_text_writes_and_account_deletion() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    service = Service()
+    auth = _token(service, "alice")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        writes = [
+            pool.submit(service.handle, "PUT", f"/texts/note{i}", {"text": str(i)}, auth)
+            for i in range(32)
+        ]
+        removal = pool.submit(service.handle, "DELETE", "/users/me", None, auth)
+        statuses = [future.result()[0] for future in (*writes, removal)]
+    # A write either lands (200) or is rejected as unauthenticated (401); never a crash.
+    assert set(statuses) <= {200, 401}
+    # Deletion is the only token-invalidating operation, so it always succeeds.
+    assert statuses[-1] == 200
+    # Deletion wins permanently: no concurrent write can resurrect the account.
+    assert "alice" not in service.users
+    assert service.handle("GET", "/texts", None, auth) == (401, {"message": "Login required"})
+
+
+def test_concurrent_text_writes_and_login_replacement() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    service = Service()
+    account = {"username": "alice", "password": "password1"}
+    old_auth = _token(service, "alice")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        writes = [
+            pool.submit(service.handle, "PUT", f"/texts/note{i}", {"text": str(i)}, old_auth)
+            for i in range(32)
+        ]
+        login = pool.submit(service.handle, "POST", "/sessions", account, "")
+        statuses = [future.result()[0] for future in writes]
+        new_token = login.result()[1]["data"]["token"]
+    assert set(statuses) <= {200, 401}
+    # The replacement revokes the old token while new writes remain readable and consistent.
+    assert service.handle("GET", "/texts", None, old_auth)[0] == 401
+    _, listing = service.handle("GET", "/texts", None, f"Bearer {new_token}")
+    names = listing["data"]
+    assert names == sorted(set(names))
+    for text_name_value in names:
+        assert (
+            service.handle("GET", f"/texts/{text_name_value}", None, f"Bearer {new_token}")[0]
+            == 200
+        )

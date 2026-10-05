@@ -4,6 +4,7 @@ import pytest
 from httpx2 import ASGITransport, AsyncClient
 
 from text_service.server import create_app
+from text_service.service import Service
 
 pytestmark = pytest.mark.anyio
 
@@ -237,3 +238,39 @@ async def test_token_expiry_http(expiring_client: tuple[AsyncClient, FakeClock])
     # Logging in again yields a usable token.
     fresh = await auth_headers(client)
     assert (await client.get("/texts", headers=fresh)).status_code == 200
+
+
+async def test_failed_requests_do_not_break_later_requests(client: AsyncClient) -> None:
+    # Each failing request type, then proof the connection still serves normally.
+    assert (await client.post("/echo", json={"text": 42})).status_code == 400
+    assert (await client.post("/echo", content=b"x" * 524289)).status_code == 413
+    assert (await client.get("/no-such-route")).status_code == 404
+    assert (await client.patch("/ping")).status_code == 405
+    assert (await client.get("/texts")).status_code == 401
+    assert (await client.get("/ping")).json() == {"data": "pong"}
+    assert (await client.post("/echo", json={"text": "ok"})).json() == {"data": "ok"}
+
+
+async def test_unexpected_handler_error_is_isolated(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = Service.handle
+    raised = False
+
+    def flaky(
+        self: Service, method: str, path: str, body: object, authorization: str
+    ) -> tuple[int, dict[str, object]]:
+        nonlocal raised
+        if path == "/ping" and not raised:
+            raised = True
+            raise RuntimeError("boom")
+        return original(self, method, path, body, authorization)
+
+    monkeypatch.setattr(Service, "handle", flaky)
+    try:
+        await client.get("/ping")
+    except RuntimeError:
+        pass  # A real uvicorn server would answer 500 instead of re-raising.
+    # The failure stays confined to that one request.
+    assert (await client.get("/ping")).json() == {"data": "pong"}
+    assert (await client.post("/echo", json={"text": "ok"})).json() == {"data": "ok"}
