@@ -37,3 +37,8 @@ def test_concurrent_registration() -> None:
     with ThreadPoolExecutor(max_workers=4) as pool:
         statuses = list(pool.map(lambda _: service.handle("POST", "/users", body, "")[0], range(4)))
     assert sorted(statuses) == [201, 409, 409, 409]
+
+def test_echo() -> None:
+    service = Service()
+    body = {"text": "Hello, World!"}
+    assert service.handle("POST", "/echo", body, "") == (200, {"data": "Hello, World!"})

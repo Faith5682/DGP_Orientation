@@ -10,6 +10,7 @@ from typing import Any
 
 ROUTES = (
     ("GET", "/ping"),
+    ("POST", "/echo"),
     ("POST", "/users"),
     ("POST", "/sessions"),
     ("DELETE", "/sessions/current"),
@@ -44,6 +45,8 @@ class Service:
             return status, {"message": "Not found" if status == 404 else "Method not allowed"}
         if method == "GET" and path == "/ping":
             return 200, {"data": "pong"}
+        if method == "POST" and path == "/echo":
+            return 200, {"data": body["text"]}
         if path in ("/users", "/sessions") and method == "POST":
             if not isinstance(body, dict) or set(body) != {"username", "password"}:
                 return 400, {"message": "Expected username and password"}
