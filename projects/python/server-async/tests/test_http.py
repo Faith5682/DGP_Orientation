@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -274,3 +276,82 @@ async def test_unexpected_handler_error_is_isolated(
     # The failure stays confined to that one request.
     assert (await client.get("/ping")).json() == {"data": "pong"}
     assert (await client.post("/echo", json={"text": "ok"})).json() == {"data": "ok"}
+
+
+async def test_handler_runs_in_a_worker_thread(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    original = Service.handle
+
+    def recording(
+        self: Service, method: str, path: str, body: object, authorization: str
+    ) -> tuple[int, dict[str, object]]:
+        seen.append(threading.get_ident())
+        return original(self, method, path, body, authorization)
+
+    monkeypatch.setattr(Service, "handle", recording)
+    assert (await client.get("/ping")).status_code == 200
+    # Blocking work must never run on the event loop thread.
+    assert seen
+    assert all(ident != loop_thread for ident in seen)
+
+
+async def test_blocking_handler_does_not_stall_event_loop(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    original = Service.handle
+
+    def blocking(
+        self: Service, method: str, path: str, body: object, authorization: str
+    ) -> tuple[int, dict[str, object]]:
+        if path == "/sessions":
+            entered.set()
+            release.wait(timeout=5)
+        return original(self, method, path, body, authorization)
+
+    monkeypatch.setattr(Service, "handle", blocking)
+    await client.post("/users", json={"username": "alice", "password": "password1"})
+    login = asyncio.create_task(
+        client.post("/sessions", json={"username": "alice", "password": "password1"})
+    )
+    assert await asyncio.to_thread(entered.wait, 5)
+    # While the login handler is blocked in a worker thread, the loop stays responsive.
+    assert (await client.get("/ping")).status_code == 200
+    assert not login.done()
+    release.set()
+    assert (await login).status_code == 200
+
+
+async def test_concurrent_registration_over_http(client: AsyncClient) -> None:
+    body = {"username": "alice", "password": "password1"}
+    responses = await asyncio.gather(*(client.post("/users", json=body) for _ in range(8)))
+    # Exactly one registration wins; the rest conflict, with no corrupted state.
+    assert sorted(response.status_code for response in responses) == [201] + [409] * 7
+
+
+async def test_concurrent_text_writes_over_http(client: AsyncClient) -> None:
+    headers = await auth_headers(client)
+    responses = await asyncio.gather(
+        *(client.put(f"/texts/note{i}", json={"text": str(i)}, headers=headers) for i in range(20))
+    )
+    assert all(response.status_code == 200 for response in responses)
+    listing = await client.get("/texts", headers=headers)
+    # Names are ordered as strings, so "note10" sorts before "note2".
+    assert listing.json() == {"data": sorted(f"note{i}" for i in range(20))}
+
+
+async def test_concurrent_mixed_success_and_failure(client: AsyncClient) -> None:
+    results = await asyncio.gather(
+        client.get("/ping"),
+        client.get("/missing"),
+        client.patch("/ping"),
+        client.post("/echo", json={"text": 1}),
+        client.post("/echo", json={"text": "ok"}),
+        client.get("/texts"),
+    )
+    # Failures in one request do not affect the outcome of the others.
+    assert [result.status_code for result in results] == [200, 404, 405, 400, 200, 401]
