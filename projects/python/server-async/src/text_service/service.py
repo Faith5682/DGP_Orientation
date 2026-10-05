@@ -18,6 +18,7 @@ ROUTES = (
     ("PUT", "/texts/{name}"),
     ("GET", "/texts/{name}"),
     ("DELETE", "/texts/{name}"),
+    ("DELETE", "/users/me"),
 )
 
 TEXT_PATH_RE = re.compile(r"^/texts/(?P<name>[^/]+)$")
@@ -132,7 +133,7 @@ class Service:
                 if len(encoded) > TEXT_MAX_BYTES:
                     return 413, {"message": "Text too large"}
                 text = body["text"]
-        protected = path in ("/texts", "/sessions/current") or (
+        protected = path in ("/texts", "/sessions/current", "/users/me") or (
             name is not None and method in TEXT_PATH_METHODS
         )
         if protected:
@@ -161,4 +162,7 @@ class Service:
                     return 200, {"data": None}
                 if path == "/texts" and method == "GET":
                     return 200, {"data": sorted(user.texts)}
+                if path == "/users/me" and method == "DELETE":
+                    del self.users[next(key for key, u in self.users.items() if u is user)]
+                    return 200, {"data": None}
         return 404, {"message": "Not found"}

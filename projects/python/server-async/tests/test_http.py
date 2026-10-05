@@ -140,16 +140,6 @@ async def test_body_limit_and_routing(client: AsyncClient) -> None:
     assert (await client.get("/ping?test=1")).json() == {"data": "pong"}
 
 
-@pytest.mark.parametrize(
-    ("method", "path"),
-    [
-        ("DELETE", "/users/me"),
-    ],
-)
-async def test_unimplemented_routes_are_absent(client: AsyncClient, method: str, path: str) -> None:
-    assert (await client.request(method, path)).status_code == 404
-
-
 async def test_text_delete(client: AsyncClient) -> None:
     headers = await auth_headers(client)
     await client.put("/texts/note", json={"text": "bye"}, headers=headers)
@@ -163,8 +153,40 @@ async def test_text_delete_requires_authentication(client: AsyncClient) -> None:
     assert (await client.delete("/texts/note")).status_code == 401
 
 
+async def test_delete_user(client: AsyncClient) -> None:
+    headers = await auth_headers(client)
+    await client.put("/texts/note", json={"text": "bye"}, headers=headers)
+    assert (await client.delete("/users/me", headers=headers)).json() == {"data": None}
+    # The revoked token can neither read nor rewrite texts.
+    assert (await client.get("/texts", headers=headers)).status_code == 401
+    assert (await client.put("/texts/note", json={"text": "x"}, headers=headers)).status_code == 401
+    # The name can be reused, and the new account does not inherit the old data.
+    recreated = await auth_headers(client)
+    assert (await client.get("/texts", headers=recreated)).json() == {"data": []}
+    # The old token still does not work against the re-registered account.
+    assert (await client.get("/texts", headers=headers)).status_code == 401
+
+
+async def test_delete_user_requires_authentication(client: AsyncClient) -> None:
+    assert (await client.delete("/users/me")).status_code == 401
+    assert (
+        await client.delete("/users/me", headers={"Authorization": "Bearer nope"})
+    ).status_code == 401
+
+
+async def test_delete_user_leaves_others_intact(client: AsyncClient) -> None:
+    alice = await auth_headers(client, "alice")
+    bob = await auth_headers(client, "bob")
+    await client.put("/texts/note", json={"text": "alice-text"}, headers=alice)
+    assert (await client.delete("/users/me", headers=alice)).status_code == 200
+    assert (await client.get("/texts", headers=bob)).json() == {"data": []}
+    await client.put("/texts/note", json={"text": "bob-text"}, headers=bob)
+    assert (await client.get("/texts/note", headers=bob)).json() == {"data": "bob-text"}
+
+
 @pytest.mark.parametrize(
-    "path", ["/ping", "/users", "/sessions", "/sessions/current", "/texts", "/texts/note"]
+    "path",
+    ["/ping", "/users", "/sessions", "/sessions/current", "/texts", "/texts/note", "/users/me"],
 )
 async def test_wrong_method_precedes_authentication(client: AsyncClient, path: str) -> None:
     assert (await client.patch(path)).status_code == 405

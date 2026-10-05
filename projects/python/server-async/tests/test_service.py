@@ -1,3 +1,7 @@
+from typing import Any
+
+import pytest
+
 from text_service.service import Service
 
 
@@ -91,3 +95,58 @@ def test_texts() -> None:
     assert service.handle("GET", "/texts", None, auth) == (200, {"data": []})
     assert service.handle("DELETE", "/texts/note", None, auth)[0] == 404
     assert service.handle("DELETE", "/texts/note", None, "")[0] == 401
+
+
+def test_delete_user() -> None:
+    service = Service()
+    auth = _token(service, "alice")
+    assert service.handle("PUT", "/texts/note", {"text": "bye"}, auth)[0] == 200
+    # Invalid identity is rejected.
+    assert service.handle("DELETE", "/users/me", None, "")[0] == 401
+    assert service.handle("DELETE", "/users/me", None, "Bearer nope")[0] == 401
+    assert service.handle("DELETE", "/users/me", None, auth) == (200, {"data": None})
+    # The revoked token can no longer read or rewrite texts.
+    assert service.handle("GET", "/texts", None, auth)[0] == 401
+    assert service.handle("PUT", "/texts/note", {"text": "x"}, auth)[0] == 401
+    # Re-registering the same name starts clean with a fresh token.
+    new_auth = _token(service, "alice")
+    assert service.handle("GET", "/texts", None, new_auth) == (200, {"data": []})
+    assert service.handle("GET", "/texts/note", None, new_auth)[0] == 404
+    assert service.handle("GET", "/texts", None, auth)[0] == 401
+
+
+def test_login_does_not_apply_to_reregistered_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    service = Service()
+    account = {"username": "alice", "password": "password1"}
+    old_auth = _token(service, "alice")
+
+    original = hashlib.pbkdf2_hmac
+    armed = threading.Event()
+    release = threading.Event()
+    block_next = False
+
+    def gated_pbkdf2(*args: Any, **kwargs: Any) -> bytes:
+        nonlocal block_next
+        if block_next:
+            block_next = False
+            armed.set()
+            assert release.wait(timeout=5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "pbkdf2_hmac", gated_pbkdf2)
+    block_next = True
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        # This login reads the old account, then blocks inside the password hash.
+        future = pool.submit(service.handle, "POST", "/sessions", account, "")
+        assert armed.wait(timeout=5)
+        # While the old login is in flight, delete the account and re-register the same name.
+        assert service.handle("DELETE", "/users/me", None, old_auth)[0] == 200
+        new_auth = _token(service, "alice")
+        # Release the old login: it must not bind a token to the new account.
+        release.set()
+        assert future.result(timeout=5)[0] == 401
+    assert service.handle("GET", "/texts", None, new_auth) == (200, {"data": []})
